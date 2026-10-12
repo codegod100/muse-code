@@ -1,7 +1,7 @@
 # Muse Code
 
 A GUI for [Meta's Muse Code](https://meta-models.github.io/muse-code-sdk),
-built on flatkit and organised around projects and threads, in the spirit
+built on [flatkit](https://github.com/codegod100/flutterkit) and organised around projects and threads, in the spirit
 of Claude Code. Muse runs in the cloud; nothing executes on your machine.
 
 A project is created from a name. It gets its own workspace on the cloud
@@ -47,7 +47,7 @@ attached repos into it.
 ## Running the relay
 
 ```sh
-cd apps/muse_code/relay
+cd relay
 docker build -t muse-relay .
 docker run -p 8080:8080 -v muse-workspaces:/workspaces -v muse-home:/root/.local/share/muse \
   -e META_API_KEY=... -e MUSE_RELAY_TOKEN=$(openssl rand -hex 24) muse-relay
@@ -66,7 +66,6 @@ Put it behind HTTPS in production (any container host works).
 ## Running the app
 
 ```sh
-cd apps/muse_code
 flutter pub get
 flutter run -d linux     # or macos, windows, chrome
 ```
