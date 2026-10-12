@@ -14,8 +14,7 @@ class RelayConfig {
   /// `bearer.<token>` subprotocol.
   final String token;
 
-  /// The `muse` binary. It reads META_API_KEY from this process's
-  /// environment.
+  /// The `muse` binary.
   final String museBin;
 
   /// Where project workspaces live, one folder per project.
@@ -24,7 +23,8 @@ class RelayConfig {
   /// Optional, for cloning private GitHub repos.
   final String? githubToken;
 
-  /// Extra environment for the muse host, for tests.
+  /// The muse host's whole environment. Muse runs commands for the agent,
+  /// so it gets only what it needs, never the relay's other secrets.
   final Map<String, String> museEnv;
 
   const RelayConfig({
@@ -40,12 +40,26 @@ class RelayConfig {
     if (token.length < 16) {
       throw StateError('Set MUSE_RELAY_TOKEN to a random secret of at least 16 characters.');
     }
-    final gh = env['GITHUB_TOKEN'];
+    String? pick(List<String> names) {
+      for (final n in names) {
+        final v = env[n];
+        if (v != null && v.isNotEmpty) return v;
+      }
+      return null;
+    }
+
+    const passThrough = ['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TMPDIR', 'SSL_CERT_DIR', 'SSL_CERT_FILE', 'TZ'];
+    final apiKey = pick(['META_API_KEY', 'MUSE_API_KEY']);
     return RelayConfig(
       token: token,
       museBin: env['MUSE_BIN'] ?? 'muse',
       workspaces: env['MUSE_WORKSPACES'] ?? '/workspaces',
-      githubToken: gh == null || gh.isEmpty ? null : gh,
+      githubToken: pick(['GITHUB_TOKEN', 'GITHUB_API_TOKEN']),
+      museEnv: {
+        for (final n in passThrough)
+          if (env[n] != null) n: env[n]!,
+        if (apiKey != null) 'META_API_KEY': apiKey,
+      },
     );
   }
 }
@@ -263,7 +277,7 @@ class Relay {
     final Process process;
     try {
       process = await Process.start(config.museBin, ['serve'],
-          workingDirectory: config.workspaces, environment: config.museEnv);
+          workingDirectory: config.workspaces, environment: config.museEnv, includeParentEnvironment: false);
     } catch (e) {
       stderr.writeln('relay: could not start ${config.museBin}: $e');
       await ws.close(WebSocketStatus.internalServerError, 'Could not start the Muse host.');

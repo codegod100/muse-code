@@ -11,13 +11,16 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git bash \
  && rm -rf /var/lib/apt/lists/*
-# Meta's installer puts a static `muse` binary in ~/.local/bin.
-RUN curl -fsSL https://dev.meta.ai/install.sh | bash \
- && install -m 0755 "$(ls /root/.local/bin/muse 2>/dev/null || command -v muse)" /usr/local/bin/muse \
+# Meta's installer puts the `muse` launcher and its binary in MUSE_INSTALL_DIR.
+RUN curl -fsSL https://dev.meta.ai/install.sh -o /tmp/install.sh \
+ && MUSE_INSTALL_DIR=/usr/local/bin bash /tmp/install.sh \
+ && rm /tmp/install.sh \
  && muse --version
 COPY --from=build /relay /usr/local/bin/muse-relay
 ENV MUSE_WORKSPACES=/workspaces PORT=8080
-VOLUME /workspaces
+# Keep both on volumes: workspaces hold the repos, muse's home holds sessions.
+VOLUME /workspaces /root/.local/share/muse
 EXPOSE 8080
-# Needs at runtime: META_API_KEY and MUSE_RELAY_TOKEN; GITHUB_TOKEN for private repos.
+# Needs at runtime: MUSE_RELAY_TOKEN and META_API_KEY (or MUSE_API_KEY);
+# GITHUB_TOKEN (or GITHUB_API_TOKEN) for private repos.
 CMD ["muse-relay"]

@@ -11,8 +11,8 @@ Future<void> main() async {
     stderr.writeln(e.message);
     exit(2);
   }
-  if ((env['META_API_KEY'] ?? '').isEmpty) {
-    stderr.writeln('Warning: META_API_KEY is not set, so the Muse host has no model access.');
+  if (!config.museEnv.containsKey('META_API_KEY')) {
+    stderr.writeln('Warning: neither META_API_KEY nor MUSE_API_KEY is set, so Muse has no model access.');
   }
   final relay = Relay(config);
   final port = int.tryParse(env['PORT'] ?? '') ?? 8080;

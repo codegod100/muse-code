@@ -18,7 +18,7 @@ void main() {
     final bin = File('${tmp.path}/fake-muse');
     await bin.writeAsString('#!/bin/sh\nwhile IFS= read -r l; do printf \'%s\\n\' "echo:\$l"; done\n');
     await Process.run('chmod', ['+x', bin.path]);
-    relay = Relay(RelayConfig(token: token, museBin: bin.path, workspaces: '${tmp.path}/ws'));
+    relay = Relay(RelayConfig(token: token, museBin: bin.path, museEnv: {'PATH': Platform.environment['PATH']!}, workspaces: '${tmp.path}/ws'));
     await relay.start(port: 0, address: InternetAddress.loopbackIPv4);
     base = 'http://127.0.0.1:${relay.port}';
   });
@@ -35,6 +35,19 @@ void main() {
     final res = await req.close();
     return (res.statusCode, jsonDecode(await utf8.decodeStream(res)) as Map<String, dynamic>);
   }
+
+  test('the host gets the API key and nothing else secret', () {
+    final c = RelayConfig.fromEnvironment({
+      'MUSE_RELAY_TOKEN': token,
+      'MUSE_API_KEY': 'k',
+      'FLY_API_KEY': 'other',
+      'GITHUB_API_TOKEN': 'gh',
+      'PATH': '/usr/bin',
+    });
+    expect(c.museEnv, {'PATH': '/usr/bin', 'META_API_KEY': 'k'});
+    expect(c.githubToken, 'gh');
+    expect(() => RelayConfig.fromEnvironment({'MUSE_RELAY_TOKEN': 'short'}), throwsStateError);
+  });
 
   test('health needs no token, everything else does', () async {
     expect((await call('GET', '/health', auth: false)).$1, 200);

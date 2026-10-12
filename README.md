@@ -49,15 +49,15 @@ attached repos into it.
 ```sh
 cd apps/muse_code/relay
 docker build -t muse-relay .
-docker run -p 8080:8080 -v muse-workspaces:/workspaces \
+docker run -p 8080:8080 -v muse-workspaces:/workspaces -v muse-home:/root/.local/share/muse \
   -e META_API_KEY=... -e MUSE_RELAY_TOKEN=$(openssl rand -hex 24) muse-relay
 ```
 
 | Variable | What it is |
 | --- | --- |
-| `META_API_KEY` | Meta Muse API key (dev.meta.ai). Muse reads it; it never leaves the relay. |
+| `META_API_KEY` or `MUSE_API_KEY` | Meta Muse API key (dev.meta.ai). Handed to Muse as `META_API_KEY`; it never leaves the relay. Muse gets no other secrets from the relay's environment. |
 | `MUSE_RELAY_TOKEN` | A random secret, at least 16 characters. The app sends it as `Authorization: Bearer <token>`, and as the `bearer.<token>` WebSocket subprotocol. |
-| `GITHUB_TOKEN` | Optional, for private GitHub repos (fine-grained, Contents read/write). |
+| `GITHUB_TOKEN` or `GITHUB_API_TOKEN` | Optional, for private GitHub repos (fine-grained, Contents read/write). |
 | `MUSE_WORKSPACES` | Where project folders live, default `/workspaces`. |
 | `PORT` | Default `8080`. |
 
