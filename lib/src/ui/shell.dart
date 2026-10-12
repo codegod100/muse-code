@@ -2,6 +2,8 @@
 /// to them, and the selected thread's conversation filling the rest.
 library;
 
+import 'dart:async';
+
 import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart' show Icons, InputBorder, InputDecoration, SelectionArea, TextField;
 import 'package:flutter/services.dart';
@@ -11,7 +13,6 @@ import '../engine.dart';
 import '../model.dart';
 import 'dialogs.dart';
 import 'entries.dart';
-import 'markdown.dart';
 
 class Shell extends StatelessWidget {
   final MuseController controller;
@@ -126,6 +127,9 @@ class ProjectsPane extends StatelessWidget {
           padding: const EdgeInsets.all(8),
           child: Row(children: [
             KitButton.ghost('Settings', icon: Icons.settings_outlined, onPressed: () => showSettingsDialog(context, controller)),
+            const Spacer(),
+            _ConnectionDot(controller: controller),
+            const SizedBox(width: 6),
           ]),
         ),
       ]),
@@ -193,20 +197,24 @@ class ThreadsPane extends StatelessWidget {
                     )
                   : Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text(project.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.heading(context)),
-                      Text(project.root.isEmpty ? 'No folder' : project.root,
+                      Text(project.repos.isEmpty ? 'No repositories' : project.repos.map((r) => r.name).join(', '),
                           maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.dim(context, small: true)),
                     ]),
             ),
             KitMenu(
               items: () => [
                 if (showProjectPicker) KitMenuItem('New project', onSelected: () => showProjectDialog(context, controller)),
-                KitMenuItem('Project settings', onSelected: () => showProjectDialog(context, controller, project: project)),
+                KitMenuItem('Repositories', onSelected: () => showReposDialog(context, controller, project)),
+                KitMenuItem('Rename project', onSelected: () => showProjectDialog(context, controller, project: project)),
+                KitMenuItem(project.autoApprove ? 'Ask before edits and commands' : 'Allow edits and commands without asking',
+                    onSelected: () => controller.setAutoApprove(project, !project.autoApprove)),
                 if (showProjectPicker) KitMenuItem('Settings', onSelected: () => showSettingsDialog(context, controller)),
                 const KitMenuDivider(),
                 KitMenuItem('Delete project', danger: true, onSelected: () async {
                   if (await confirm(context,
                       title: 'Delete ${project.name}?',
-                      body: 'Its threads are removed from Muse Code. Files in the folder are not touched.',
+                      body: 'Its threads and its cloud workspace, including the clones of attached repositories, are deleted. '
+                          'Anything already pushed to a remote stays there.',
                       action: 'Delete')) {
                     controller.deleteProject(project);
                   }
@@ -227,7 +235,7 @@ class ThreadsPane extends StatelessWidget {
             if (workers.isEmpty)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-                child: Text('Workers appear here when the orchestrator hands out tasks.',
+                child: Text('Workers appear here when Muse starts subagents for parts of the work.',
                     style: KitText.dim(context, small: true)),
               ),
             for (final w in workers) row(w, icon: Icons.smart_toy_outlined, subtitle: statusLabel(w.status)),
@@ -254,8 +262,9 @@ class _Welcome extends StatelessWidget {
           Text('Start a project', style: KitText.heading(context).copyWith(fontSize: 20)),
           const SizedBox(height: 8),
           Text(
-            'Point a project at a folder and tell its orchestrator what you want. It splits the work into '
-            'worker threads that read, edit and test the code, and reports back as each one finishes.',
+            'A project is a workspace in the cloud. Attach git repositories to it, then tell its orchestrator '
+            'what you want: Muse splits the work into worker threads and reports back as each one finishes. '
+            'Nothing runs on this machine.',
             style: KitText.dim(context).copyWith(height: 1.5),
           ),
           const SizedBox(height: 20),
@@ -311,8 +320,8 @@ class _ChatPaneState extends State<ChatPane> {
 
   void _send() {
     final text = _input.text;
-    if (text.trim().isEmpty || widget.controller.apiKey.isEmpty) return;
-    widget.controller.sendUserMessage(widget.project, widget.thread, text);
+    if (text.trim().isEmpty || !widget.controller.online) return;
+    unawaited(widget.controller.sendUserMessage(widget.project, widget.thread, text));
     _input.clear();
   }
 
@@ -322,7 +331,8 @@ class _ChatPaneState extends State<ChatPane> {
     final t = widget.thread;
     final controller = widget.controller;
     final busy = t.isBusy;
-    final noKey = controller.apiKey.isEmpty;
+    final offline = !controller.online;
+    final noRepos = t.isMain && widget.project.repos.isEmpty && t.entries.isEmpty;
 
     // Newest first, so the reversed list stays pinned to the bottom.
     final items = <Widget>[
@@ -363,26 +373,31 @@ class _ChatPaneState extends State<ChatPane> {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(24, 0, 24, 18),
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                if (noKey)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Row(children: [
-                      Icon(Icons.key_outlined, size: 15, color: c.textDim),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text('Add your Anthropic API key to start.', style: KitText.dim(context, small: true)),
-                      ),
-                      KitButton.ghost('Open settings', onPressed: () => showSettingsDialog(context, controller)),
-                    ]),
+                if (offline)
+                  _Notice(
+                    icon: Icons.cloud_off_outlined,
+                    text: controller.connection == Connection.connecting
+                        ? 'Connecting to Muse…'
+                        : controller.connectionError ?? 'Not connected to Muse.',
+                    action: controller.settings.configured
+                        ? KitButton.ghost('Reconnect', onPressed: controller.connect)
+                        : KitButton.ghost('Open settings', onPressed: () => showSettingsDialog(context, controller)),
+                  )
+                else if (noRepos)
+                  _Notice(
+                    icon: Icons.source_outlined,
+                    text: 'No repositories attached yet.',
+                    action: KitButton.ghost('Attach a repository',
+                        onPressed: () => showReposDialog(context, controller, widget.project)),
                   ),
                 _Composer(
                   controller: _input,
                   focus: _focus,
                   hint: t.isMain ? 'Tell the orchestrator what to do…' : 'Message this worker directly…',
                   busy: busy,
-                  canSend: !noKey,
+                  canSend: !offline,
                   onSend: _send,
-                  onStop: () => controller.stop(t),
+                  onStop: () => controller.stop(widget.project, t),
                 ),
               ]),
             ),
@@ -403,7 +418,6 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = thread;
-    final model = t.isMain ? controller.settings.model : controller.settings.workerModel;
     final tokens = t.inputTokens + t.outputTokens;
     return Container(
       height: 52,
@@ -417,7 +431,7 @@ class _Header extends StatelessWidget {
               [
                 t.isMain ? 'Orchestrator' : 'Worker',
                 statusLabel(t.status),
-                model,
+                if (controller.hostLabel != null) controller.hostLabel!,
                 if (tokens > 0) '${_compact(tokens)} tokens',
               ].join(' · '),
               maxLines: 1,
@@ -432,7 +446,7 @@ class _Header extends StatelessWidget {
           KitIconButton(Icons.delete_outline, tooltip: 'Remove worker', onPressed: () async {
             if (await confirm(context,
                 title: 'Remove ${t.title}?',
-                body: 'The thread and its history are removed. Changes it made to files stay.',
+                body: 'The thread is removed and Muse closes the subagent. Changes it made to files stay.',
                 action: 'Remove')) {
               controller.deleteWorker(project, t);
             }
@@ -455,15 +469,11 @@ class _WorkingLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final live = thread.liveText.trim();
-    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      if (live.isNotEmpty) ...[Markdown(live), const SizedBox(height: 10)],
-      Row(children: [
-        const KitSpinner(size: 12),
-        const SizedBox(width: 8),
-        Text(thread.status == ThreadStatus.waiting ? 'Waiting for your approval' : 'Working…',
-            style: KitText.dim(context, small: true)),
-      ]),
+    return Row(children: [
+      const KitSpinner(size: 12),
+      const SizedBox(width: 8),
+      Text(thread.status == ThreadStatus.waiting ? 'Waiting for your approval' : 'Working…',
+          style: KitText.dim(context, small: true)),
     ]);
   }
 }
@@ -494,8 +504,8 @@ class _EmptyThread extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               thread.isMain
-                  ? 'The orchestrator splits your request into tasks and starts a worker thread for each. '
-                      'Workers show up on the left; their reports land back here.'
+                  ? 'The orchestrator splits your request into tasks and starts a Muse subagent for each. '
+                      'They show up on the left as worker threads; their results land back here.'
                   : 'Anything you send here goes straight to this worker.',
               style: KitText.dim(context).copyWith(height: 1.5),
             ),
@@ -590,7 +600,7 @@ class _ComposerState extends State<_Composer> {
         Row(children: [
           Expanded(
             child: Text(
-              widget.busy ? 'Messages you send now are read when the current step finishes.' : 'Enter to send · Shift+Enter for a new line',
+              widget.busy ? 'Messages you send now are queued for when the current turn finishes.' : 'Enter to send · Shift+Enter for a new line',
               style: KitText.dim(context, small: true).copyWith(fontSize: 11),
             ),
           ),
@@ -601,6 +611,46 @@ class _ComposerState extends State<_Composer> {
           KitButton.primary('Send', icon: Icons.arrow_upward, onPressed: empty || !widget.canSend ? null : widget.onSend),
         ]),
       ]),
+    );
+  }
+}
+
+class _Notice extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  final Widget action;
+  const _Notice({required this.icon, required this.text, required this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = KitTheme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(children: [
+        Icon(icon, size: 15, color: c.textDim),
+        const SizedBox(width: 6),
+        Expanded(child: Text(text, style: KitText.dim(context, small: true))),
+        action,
+      ]),
+    );
+  }
+}
+
+class _ConnectionDot extends StatelessWidget {
+  final MuseController controller;
+  const _ConnectionDot({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = KitTheme.of(context);
+    final (color, label) = switch (controller.connection) {
+      Connection.online => (c.success, 'Connected to ${controller.hostLabel ?? 'Muse'}'),
+      Connection.connecting => (statusColor(c, ThreadStatus.waiting), 'Connecting…'),
+      Connection.offline => (c.borderStrong, controller.connectionError ?? 'Not connected'),
+    };
+    return KitTooltip(
+      message: label,
+      child: Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
     );
   }
 }

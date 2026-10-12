@@ -1,5 +1,5 @@
 name: muse_code
-description: A project-based coding assistant where an orchestrator thread hands work to worker threads, built on flatkit.
+description: A project-based coding GUI for Meta's Muse Code, where an orchestrator thread hands work to worker threads, built on flatkit. Muse runs in the cloud.
 publish_to: 'none'
 version: 0.1.0
 
@@ -13,6 +13,7 @@ dependencies:
   flatkit:
     path: ../..
   http: ^1.2.0
+  web_socket_channel: ^3.0.0
 
 dev_dependencies:
   flutter_test:

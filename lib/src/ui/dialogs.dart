@@ -2,7 +2,6 @@ import 'package:flatkit/flatkit.dart';
 import 'package:flutter/material.dart' show Icons;
 import 'package:flutter/widgets.dart';
 
-import '../anthropic.dart';
 import '../engine.dart';
 import '../model.dart';
 
@@ -27,7 +26,8 @@ class _Field extends StatelessWidget {
       );
 }
 
-/// Creates a project, or edits one when [project] is given.
+/// Creates a project from a name, or renames one when [project] is given.
+/// Repositories are attached afterwards, from the project's menu.
 Future<void> showProjectDialog(BuildContext context, MuseController controller, {Project? project}) {
   return showKitDialog(context, (_) => _ProjectDialog(controller: controller, project: project));
 }
@@ -43,62 +43,34 @@ class _ProjectDialog extends StatefulWidget {
 
 class _ProjectDialogState extends State<_ProjectDialog> {
   late final _name = TextEditingController(text: widget.project?.name ?? '');
-  late final _root = TextEditingController(text: widget.project?.root ?? '');
-  late bool _auto = widget.project?.autoApprove ?? false;
 
   @override
   void dispose() {
     _name.dispose();
-    _root.dispose();
     super.dispose();
   }
 
   void _save() {
     final c = widget.controller;
     if (widget.project == null) {
-      final p = c.createProject(_name.text, _root.text);
-      c.updateProject(p, autoApprove: _auto);
+      c.createProject(_name.text);
     } else {
-      c.updateProject(widget.project!, name: _name.text, root: _root.text, autoApprove: _auto);
+      c.renameProject(widget.project!, _name.text);
     }
     Navigator.of(context).pop();
   }
 
   @override
   Widget build(BuildContext context) {
-    final host = widget.controller.host;
-    final root = _root.text.trim();
-    final missing = host.hasFiles && root.isNotEmpty && !host.directoryExists(root);
     return KitDialog(
-      title: widget.project == null ? 'New project' : 'Project settings',
+      title: widget.project == null ? 'New project' : 'Rename project',
       content: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         _Field(
           label: 'Name',
+          help: widget.project == null
+              ? 'The project gets its own workspace in the cloud. Attach git repositories to it once it exists.'
+              : null,
           child: KitTextField(controller: _name, hint: 'My app', autofocus: true, onSubmitted: (_) => _save()),
-        ),
-        _Field(
-          label: 'Folder',
-          help: !host.hasFiles
-              ? 'Workers need the desktop app to work with files; here they can only reply.'
-              : missing
-                  ? 'No folder at that path yet.'
-                  : 'Workers read, edit and run commands here. Leave empty for a chat-only project.',
-          child: KitTextField(
-            controller: _root,
-            hint: '/home/you/code/my-app',
-            error: missing,
-            enabled: host.hasFiles,
-            autocorrect: false,
-            enableSuggestions: false,
-            style: const TextStyle(fontFamily: 'monospace', package: null),
-            onChanged: (_) => setState(() {}),
-            onSubmitted: (_) => _save(),
-          ),
-        ),
-        KitCheckbox(
-          value: _auto,
-          onChanged: (v) => setState(() => _auto = v),
-          label: 'Let workers edit files and run commands without asking',
         ),
       ]),
       actions: [
@@ -106,6 +78,126 @@ class _ProjectDialogState extends State<_ProjectDialog> {
         KitButton.primary(widget.project == null ? 'Create' : 'Save', onPressed: _save),
       ],
     );
+  }
+}
+
+/// Lists the git repositories attached to a project and attaches more.
+Future<void> showReposDialog(BuildContext context, MuseController controller, Project project) {
+  return showKitDialog(context, (_) => _ReposDialog(controller: controller, project: project));
+}
+
+class _ReposDialog extends StatefulWidget {
+  final MuseController controller;
+  final Project project;
+  const _ReposDialog({required this.controller, required this.project});
+
+  @override
+  State<_ReposDialog> createState() => _ReposDialogState();
+}
+
+class _ReposDialogState extends State<_ReposDialog> {
+  final _url = TextEditingController();
+  final _branch = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _url.dispose();
+    _branch.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run(Future<void> Function() action) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await action();
+      _url.clear();
+      _branch.clear();
+    } catch (e) {
+      _error = '$e';
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = KitTheme.of(context);
+    final p = widget.project;
+    final ready = widget.controller.settings.configured;
+    return KitDialog(
+      title: 'Repositories',
+      width: 520,
+      content: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (p.repos.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Text('No repositories yet. Each one is cloned into this project\'s cloud workspace, '
+                'where Muse can read, change and test it.', style: KitText.dim(context)),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: KitPanel(
+              child: Column(children: [
+                for (final (i, r) in p.repos.indexed) ...[
+                  if (i > 0) const KitDivider(),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+                    child: Row(children: [
+                      Icon(Icons.source_outlined, size: 16, color: c.textDim),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(r.name, style: KitText.body(context).copyWith(fontWeight: FontWeight.w500)),
+                          Text([r.url, if (r.branch.isNotEmpty) r.branch].join(' · '),
+                              maxLines: 1, overflow: TextOverflow.ellipsis, style: KitText.dim(context, small: true)),
+                        ]),
+                      ),
+                      KitIconButton(Icons.link_off,
+                          tooltip: 'Detach and delete the clone',
+                          onPressed: _busy ? null : () => _run(() => widget.controller.detachRepo(p, r))),
+                    ]),
+                  ),
+                ],
+              ]),
+            ),
+          ),
+        _Field(
+          label: 'Git URL',
+          help: ready
+              ? 'An https URL. Private GitHub repos need GITHUB_TOKEN set on the relay.'
+              : 'Set up the relay in Settings first.',
+          child: KitTextField(
+            controller: _url,
+            hint: 'https://github.com/owner/repo',
+            autofocus: true,
+            enabled: ready && !_busy,
+            autocorrect: false,
+            enableSuggestions: false,
+            error: _error != null,
+            onSubmitted: (_) => _attach(),
+          ),
+        ),
+        _Field(
+          label: 'Branch',
+          child: KitTextField(controller: _branch, hint: 'Default branch', enabled: ready && !_busy, onSubmitted: (_) => _attach()),
+        ),
+        if (_error != null) Text(_error!, style: KitText.small(context, color: c.danger)),
+      ]),
+      actions: [
+        KitButton('Close', onPressed: () => Navigator.of(context).pop()),
+        KitButton.primary(_busy ? 'Working…' : 'Attach', icon: Icons.add, onPressed: !ready || _busy ? null : _attach),
+      ],
+    );
+  }
+
+  void _attach() {
+    if (_url.text.trim().isEmpty || _busy) return;
+    _run(() => widget.controller.attachRepo(widget.project, _url.text, branch: _branch.text.trim()));
   }
 }
 
@@ -123,21 +215,21 @@ class _SettingsDialog extends StatefulWidget {
 
 class _SettingsDialogState extends State<_SettingsDialog> {
   late final Settings _s = Settings.fromJson(widget.controller.settings.toJson());
-  late final _key = TextEditingController(text: _s.apiKey);
+  late final _url = TextEditingController(text: _s.relayUrl);
+  late final _token = TextEditingController(text: _s.relayToken);
   bool _show = false;
 
   @override
   void dispose() {
-    _key.dispose();
+    _url.dispose();
+    _token.dispose();
     super.dispose();
   }
 
   void _save() {
     widget.controller.updateSettings((s) {
-      s.apiKey = _key.text.trim();
-      s.model = _s.model;
-      s.workerModel = _s.workerModel;
-      s.effort = _s.effort;
+      s.relayUrl = _url.text.trim();
+      s.relayToken = _token.text.trim();
       s.theme = _s.theme;
     });
     Navigator.of(context).pop();
@@ -145,19 +237,27 @@ class _SettingsDialogState extends State<_SettingsDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final env = widget.controller.host.envApiKey != null;
-    final models = [for (final (id, label) in claudeModels) (id, label)];
+    final controller = widget.controller;
     return KitDialog(
       title: 'Settings',
       width: 460,
       content: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         _Field(
-          label: 'Anthropic API key',
-          help: 'From console.anthropic.com. It starts with sk-ant- and is sent only to api.anthropic.com, '
-              'as the x-api-key header.${env ? ' Leave empty to use ANTHROPIC_API_KEY from your environment.' : ''}',
+          label: 'Relay URL',
+          help: 'The Muse relay running in the cloud. It hosts Muse, your project workspaces and their repos.',
           child: KitTextField(
-            controller: _key,
-            hint: env ? 'Using ANTHROPIC_API_KEY' : 'sk-ant-…',
+            controller: _url,
+            hint: 'https://muse-relay.example.com',
+            autocorrect: false,
+            enableSuggestions: false,
+          ),
+        ),
+        _Field(
+          label: 'Relay token',
+          help: 'The relay\'s MUSE_RELAY_TOKEN. It is sent only to the relay, as Authorization: Bearer <token>. '
+              'Your Meta API key stays on the relay and never comes to this app.',
+          child: KitTextField(
+            controller: _token,
             obscureText: !_show,
             autocorrect: false,
             enableSuggestions: false,
@@ -169,36 +269,8 @@ class _SettingsDialogState extends State<_SettingsDialog> {
           ),
         ),
         _Field(
-          label: 'Orchestrator model',
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: KitSelect<String>(
-                value: _s.model, options: models, onChanged: (v) => setState(() => _s.model = v)),
-          ),
-        ),
-        _Field(
-          label: 'Worker model',
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: KitSelect<String>(
-                value: _s.workerModel, options: models, onChanged: (v) => setState(() => _s.workerModel = v)),
-          ),
-        ),
-        _Field(
-          label: 'Effort',
-          help: 'Higher effort thinks longer and uses more tokens.',
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: KitSegmented<String>(
-              segments: [for (final e in effortLevels) (e, e)],
-              selected: _s.effort,
-              onChanged: (v) => setState(() => _s.effort = v),
-            ),
-          ),
-        ),
-        _Field(
           label: 'Appearance',
-          help: 'Saved in ${widget.controller.host.stateLocation}',
+          help: 'Saved in ${controller.host.stateLocation}',
           child: Align(
             alignment: Alignment.centerLeft,
             child: KitSegmented<String>(
@@ -206,6 +278,17 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               selected: _s.theme,
               onChanged: (v) => setState(() => _s.theme = v),
             ),
+          ),
+        ),
+        ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) => Text(
+            switch (controller.connection) {
+              Connection.online => 'Connected to ${controller.hostLabel ?? 'Muse'}.',
+              Connection.connecting => 'Connecting…',
+              Connection.offline => controller.connectionError ?? 'Not connected.',
+            },
+            style: KitText.dim(context, small: true),
           ),
         ),
       ]),

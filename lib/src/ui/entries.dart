@@ -84,7 +84,7 @@ class EntryView extends StatelessWidget {
       case EntryKind.assigned:
         return _Card(
           icon: Icons.assignment_outlined,
-          title: thread.isMain ? 'Message' : 'Task from the orchestrator',
+          title: thread.isMain ? 'Message' : 'Objective from the orchestrator',
           child: Markdown(entry.text),
         );
       case EntryKind.assistant:
@@ -149,49 +149,38 @@ class _Card extends StatelessWidget {
 }
 
 String _toolLabel(String name) => switch (name) {
-      'read_file' => 'Read',
-      'write_file' => 'Write',
-      'edit_file' => 'Edit',
-      'list_dir' => 'List',
-      'search' => 'Search',
-      'run_command' => 'Run',
-      'spawn_worker' => 'Spawned worker',
-      'message_worker' => 'Messaged worker',
-      'list_workers' => 'Checked workers',
+      'read_file' || 'read' => 'Read',
+      'write_file' || 'write' => 'Write',
+      'edit_file' || 'edit' || 'apply_patch' => 'Edit',
+      'list_dir' || 'ls' => 'List',
+      'search' || 'grep' || 'glob' => 'Search',
+      'bash' || 'shell' || 'run_command' => 'Run',
+      'web_search' => 'Web search',
+      'subagent' => 'Started worker',
       _ => name,
     };
 
 IconData _toolIcon(String name) => switch (name) {
-      'read_file' => Icons.description_outlined,
-      'write_file' => Icons.note_add_outlined,
-      'edit_file' => Icons.edit_outlined,
-      'list_dir' => Icons.folder_open_outlined,
-      'search' => Icons.search,
-      'run_command' => Icons.terminal,
-      'spawn_worker' => Icons.call_split,
-      'message_worker' => Icons.forward_to_inbox_outlined,
-      'list_workers' => Icons.list_alt,
+      'read_file' || 'read' => Icons.description_outlined,
+      'write_file' || 'write' => Icons.note_add_outlined,
+      'edit_file' || 'edit' || 'apply_patch' => Icons.edit_outlined,
+      'list_dir' || 'ls' => Icons.folder_open_outlined,
+      'search' || 'grep' || 'glob' => Icons.search,
+      'bash' || 'shell' || 'run_command' => Icons.terminal,
+      'web_search' => Icons.public,
+      'subagent' => Icons.call_split,
       _ => Icons.build_outlined,
     };
 
 String _toolSummary(Entry e, Project p) {
   final i = e.input ?? const {};
-  switch (e.toolName) {
-    case 'run_command':
-      return i['command'] as String? ?? '';
-    case 'search':
-      return '${i['pattern'] ?? ''}${i['path'] == null ? '' : '  in ${i['path']}'}';
-    case 'list_dir':
-      return (i['path'] as String?)?.isNotEmpty == true ? i['path'] : '.';
-    case 'spawn_worker':
-      return i['title'] as String? ?? '';
-    case 'message_worker':
-      return p.thread(e.workerId ?? '')?.title ?? (i['worker_id'] as String? ?? '');
-    case 'list_workers':
-      return '';
-    default:
-      return i['path'] as String? ?? '';
+  if (e.toolName == 'subagent') return p.thread(e.workerId ?? '')?.title ?? (i['objective'] as String? ?? '');
+  for (final k in ['command', 'cmd', 'path', 'file_path', 'pattern', 'query', 'url']) {
+    final v = i[k];
+    if (v is String && v.isNotEmpty) return v;
+    if (v is List && v.isNotEmpty) return v.join(' ');
   }
+  return e.approval?.subject ?? '';
 }
 
 class ToolRow extends StatefulWidget {
@@ -213,7 +202,8 @@ class _ToolRowState extends State<ToolRow> {
     final c = KitTheme.of(context);
     final e = widget.entry;
     final name = e.toolName ?? '';
-    final asking = e.toolState == ToolState.awaitingApproval && widget.controller.isAwaitingApproval(e);
+    final approval = e.approval;
+    final asking = approval != null;
     final open = _open || asking;
     final worker = widget.project.thread(e.workerId ?? '');
 
@@ -246,7 +236,7 @@ class _ToolRowState extends State<ToolRow> {
               _toolSummary(e, widget.project).replaceAll('\n', ' '),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: name == 'spawn_worker' || name == 'message_worker'
+              style: name == 'subagent'
                   ? KitText.body(context).copyWith(fontSize: 13)
                   : monoStyle(context, size: 12).copyWith(color: c.textDim),
             ),
@@ -270,16 +260,16 @@ class _ToolRowState extends State<ToolRow> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             ..._details(context, e),
             if (asking) ...[
+              if (approval.subject != null) ...[
+                const SizedBox(height: 6),
+                Text('Muse wants to ${approval.subject}', style: KitText.dim(context, small: true)),
+              ],
               const SizedBox(height: 8),
               Wrap(spacing: 8, runSpacing: 8, children: [
-                KitButton.primary('Allow',
-                    icon: Icons.check,
-                    onPressed: () => widget.controller.resolveApproval(widget.project, e, allow: true)),
-                KitButton('Allow all in this project',
-                    onPressed: () =>
-                        widget.controller.resolveApproval(widget.project, e, allow: true, always: true)),
-                KitButton.danger('Deny',
-                    onPressed: () => widget.controller.resolveApproval(widget.project, e, allow: false)),
+                for (final (i, choice) in approval.choices.indexed)
+                  _choiceButton(choice, primary: i == 0, onPressed: approval.deciding
+                      ? null
+                      : () => widget.controller.decide(widget.project, e, choice['choiceId'] as String)),
               ]),
             ],
           ]),
@@ -290,28 +280,32 @@ class _ToolRowState extends State<ToolRow> {
   List<Widget> _details(BuildContext context, Entry e) {
     final i = e.input ?? const {};
     final parts = <Widget>[];
-    switch (e.toolName) {
-      case 'write_file':
-        parts.add(CodeBlock(_clip(i['content'] as String? ?? ''), language: i['path'] as String?));
-      case 'edit_file':
-        parts.add(_Diff(old: i['old_string'] as String? ?? '', replacement: i['new_string'] as String? ?? ''));
-      case 'run_command':
-        parts.add(CodeBlock(i['command'] as String? ?? '', language: 'command'));
-      case 'spawn_worker':
-        parts.add(Markdown(i['instructions'] as String? ?? ''));
-      case 'message_worker':
-        parts.add(Markdown(i['message'] as String? ?? ''));
-      case 'read_file' || 'list_dir' || 'search' || 'list_workers':
-        break;
-      default:
-        parts.add(CodeBlock(const JsonEncoder.withIndent('  ').convert(i)));
+    if (e.toolName == 'subagent') {
+      parts.add(Markdown(i['objective'] as String? ?? ''));
+    } else if (i['old_string'] is String && i['new_string'] is String) {
+      parts.add(_Diff(old: i['old_string'] as String, replacement: i['new_string'] as String));
+    } else if (i['content'] is String) {
+      parts.add(CodeBlock(_clip(i['content'] as String), language: i['path'] as String?));
+    } else if (i['command'] is String) {
+      parts.add(CodeBlock(i['command'] as String, language: 'command'));
+    } else if (i.isNotEmpty && !(i.length == 1 && i.containsKey('path'))) {
+      parts.add(CodeBlock(const JsonEncoder.withIndent('  ').convert(i)));
     }
     final out = e.output;
-    if (out != null && out.isNotEmpty && e.toolName != 'spawn_worker' && e.toolName != 'message_worker') {
+    if (out != null && out.isNotEmpty && e.toolName != 'subagent') {
       if (parts.isNotEmpty) parts.add(const SizedBox(height: 6));
       parts.add(CodeBlock(_clip(out), language: e.toolState == ToolState.error ? 'error' : 'output'));
     }
     return parts;
+  }
+
+  static Widget _choiceButton(Map<String, dynamic> choice, {required bool primary, VoidCallback? onPressed}) {
+    final label = choice['label'] as String? ?? choice['choiceId'] as String;
+    final decision = '${choice['decision'] ?? ''}';
+    if (decision == 'abort' || decision == 'denied' || decision.startsWith('reject')) {
+      return KitButton.danger(label, onPressed: onPressed);
+    }
+    return primary ? KitButton.primary(label, icon: Icons.check, onPressed: onPressed) : KitButton(label, onPressed: onPressed);
   }
 
   static String _clip(String s) {

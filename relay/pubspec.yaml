@@ -1,0 +1,11 @@
+name: muse_relay
+description: Runs Muse Code hosts in the cloud and bridges them to the Muse Code app over a WebSocket.
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.5.0
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0

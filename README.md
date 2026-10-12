@@ -1,58 +1,85 @@
 # Muse Code
 
-A desktop coding assistant built on flatkit, in the spirit of Claude Code
-but organised around projects and threads.
+A GUI for [Meta's Muse Code](https://meta-models.github.io/muse-code-sdk),
+built on flatkit and organised around projects and threads, in the spirit
+of Claude Code. Muse runs in the cloud; nothing executes on your machine.
 
-Each project points at a folder and has a **Main** thread with an
-orchestrator in it. You tell the orchestrator what you want; it splits the
-work into tasks and starts a **worker thread** for each one. Workers read,
-search and edit files and run commands in the project folder, then report
-back. Reports land in Main as cards, and the orchestrator reads them, tells
-you the outcome and hands out any follow-up work. Follow-ups about a task go
-to the worker that owns it, and you can open any worker and talk to it
-directly.
+A project is created from a name. It gets its own workspace on the cloud
+host, and you attach git repositories to it afterwards (project menu →
+Repositories); each one is cloned into the workspace.
 
-- Workers run in parallel and show their status in the thread list:
-  working, needs approval, done, failed or stopped.
-- Edits and commands ask first, with Allow, Allow all in this project and
-  Deny on the tool call. Turn asking off per project in its settings.
-- Replies stream in, tool calls expand to show their input and output, and
-  edits show as a diff.
-- Projects, threads and settings are saved between runs
-  (`~/.config/muse_code/state.json` on Linux).
+Each project has a **Main** thread backed by a Muse session whose agent
+orchestrates: it plans, and starts a Muse subagent for each independent
+piece of work. Every subagent shows up as a **worker thread** you can open,
+follow live and message directly. When a worker finishes, its result lands
+in Main as a report card and the orchestrator carries on.
 
-## Running it
+- Worker status in the thread list: working, needs approval, done, failed
+  or stopped.
+- Approvals come from Muse with its own choices (Allow once, Allow for this
+  session, Reject, …). Turn asking off per project from its menu.
+- Replies stream in; tool calls expand to show their input, output and
+  edits.
+- The app keeps its view of projects and threads between runs
+  (`~/.config/muse_code/state.json` on Linux) and replays anything it missed
+  from Muse when it reconnects.
+
+## How it fits together
+
+```
+ Muse Code app  ──WebSocket (MSP frames)──▶  relay  ──stdio──▶  muse serve
+ (desktop/web)  ──HTTPS (projects, repos)─▶  (cloud)            (+ git, workspaces)
+```
+
+`muse serve` speaks the Muse Session Protocol (MSP), JSON-RPC 2.0 over
+stdio. The relay (`relay/`) runs next to it in a container: it bridges the
+app's WebSocket to the host, keeps one folder per project, and clones
+attached repos into it.
+
+- `lib/src/msp.dart`: the MSP client (requests, commands with UUIDv7
+  `commandId`s, notifications, host requests such as `approval/request`).
+- `lib/src/engine.dart`: sessions per project, turns, subagents → worker
+  threads, approvals, reconnect and replay.
+- `lib/src/relay_api.dart`: project workspaces and repos on the relay.
+- `lib/src/ui/`: the window, transcript, dialogs and a small Markdown
+  renderer, all flatkit widgets.
+
+## Running the relay
+
+```sh
+cd apps/muse_code/relay
+docker build -t muse-relay .
+docker run -p 8080:8080 -v muse-workspaces:/workspaces \
+  -e META_API_KEY=... -e MUSE_RELAY_TOKEN=$(openssl rand -hex 24) muse-relay
+```
+
+| Variable | What it is |
+| --- | --- |
+| `META_API_KEY` | Meta Muse API key (dev.meta.ai). Muse reads it; it never leaves the relay. |
+| `MUSE_RELAY_TOKEN` | A random secret, at least 16 characters. The app sends it as `Authorization: Bearer <token>`, and as the `bearer.<token>` WebSocket subprotocol. |
+| `GITHUB_TOKEN` | Optional, for private GitHub repos (fine-grained, Contents read/write). |
+| `MUSE_WORKSPACES` | Where project folders live, default `/workspaces`. |
+| `PORT` | Default `8080`. |
+
+Put it behind HTTPS in production (any container host works).
+
+## Running the app
 
 ```sh
 cd apps/muse_code
 flutter pub get
-flutter run -d linux     # or macos, windows
+flutter run -d linux     # or macos, windows, chrome
 ```
 
-Add your Anthropic API key in Settings (it starts with `sk-ant-` and is sent
-as the `x-api-key` header to api.anthropic.com only), or set
-`ANTHROPIC_API_KEY` before starting the app. The orchestrator and workers use
-Claude Opus 5.5 by default; the model for each and the effort level are in
-Settings.
+In Settings, enter the relay URL and the relay token. On the web build,
+state lasts only as long as the tab.
 
-The web build (`flutter run -d chrome`) works for chat-only projects: the
-browser has no folder to work in, so workers have no file or command tools
-there, and state lasts only as long as the tab.
-
-## How it fits together
-
-- `lib/src/engine.dart`: the thread loop, orchestrator tools
-  (`spawn_worker`, `message_worker`, `list_workers`), approvals, report
-  delivery and saving.
-- `lib/src/anthropic.dart`: a streaming Messages API client (Dart has no
-  official SDK), keeping thinking blocks so history is passed back intact.
-- `lib/src/tools.dart`: tool schemas and the orchestrator and worker
-  prompts.
-- `lib/src/host/`: file and shell tools and state storage for desktop, with a
-  stub for the web.
-- `lib/src/ui/`: the window, transcript, dialogs and a small Markdown
-  renderer, all flatkit widgets.
+## Tests
 
 ```sh
-flutter test
+flutter test                       # app, against Muse's recorded MSP sessions
+cd relay && dart test              # relay
 ```
+
+`test/fixtures/msp/` holds conformance transcripts from the Muse SDK
+repository, replayed as a stand-in host.
